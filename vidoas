@@ -1,0 +1,94 @@
+#!/bin/bash
+#
+# 18.08.2022: Updated/forked Version compared to original one: https://git.sr.ht/~insidepie/vidoas/tree
+# This Version is specific to Arch and his opendoas package (location /etc/doas.conf)
+# Changed the behavior of this Script to be exactly like visudo, wich NEEDS the user to be root.
+#
+# Thanks to original Author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
+#
+#
+
+#User must be root (because visudo behave same way)
+if [ "$(id -u)" != 0 ]; then printf '%s: you need to be root\n' "$0"; exit 1; fi
+
+error() {
+  echo "vidoas: $@" 1>&2
+  exit 1
+}
+
+help() {
+    cat - >&2 <<EOF
+vidoas - safely edit the doas.conf file (like visudo for doas)
+
+usage: vidoas [-hv]
+
+Options:
+  -h, --help		display help message and exit
+  -v, --version		display version information and exit
+
+Environment Variables:
+  DOAS_EDITOR	program used to edit files
+  EDITOR	program used to edit files if DOAS_EDITOR is unset
+EOF
+}
+
+while [ "$#" -ne 0 ]; do
+	case "$1" in
+		-h | --help)
+			help
+			exit 0
+			;;
+		-v | --version)
+			echo 'vidoas version 1.0.0'
+			exit 0
+			;;
+		*)
+			echo "vidoas: invalid option: '$1'"
+			help
+			exit 1
+			;;
+	esac
+done
+
+trap 'trap - EXIT HUP QUIT TERM INT ABRT; rm -f "$tmp" "$tmpcopy"' EXIT HUP QUIT TERM INT ABRT
+
+# Check for editor
+if [ -z "$DOAS_EDITOR" ]; then
+	if [ -z "$EDITOR" ]; then
+		error 'no editor specified'
+	fi
+	editor_cmd="$EDITOR"
+else
+	editor_cmd="$DOAS_EDITOR"
+fi
+
+if ! command -v "$editor_cmd" > /dev/null 2>&1; then
+	error "no valid editor command: '$editor_cmd'"
+fi
+
+# Set up temps
+tmp="$(mktemp)"
+tmpcopy="$(mktemp)"
+
+cat "/etc/doas.conf" > "$tmp"
+conf="/etc/doas.conf"
+
+cat "$tmp" > "$tmpcopy"
+"$editor_cmd" "$tmp"
+
+# Loop until config is correct
+while ! doas -C $tmp; do
+	echo "Syntax Error! See Message above this line. Reopening Editor in 3 Seconds."
+	sleep 3
+    "$editor_cmd" "$tmp"
+done
+
+# Copy if changed
+if cmp -s "$tmp" "$tmpcopy"; then
+	echo "vidoas: $conf: unchanged"
+else
+    chown root:root "$tmp"
+    chmod 0400 "$tmp"
+    cp -fp "$tmp" "$conf"
+    rm -f "$tmp"
+fi
