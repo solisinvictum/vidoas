@@ -6,3 +6,5 @@ This Version is specific to Arch and his opendoas package (location /etc/doas.co
 Changed the behavior of this Script to be exactly like visudo, wich NEEDS the user to be root.
 
 Thanks to original Author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
+
+Thanks to the Arch IRC, in special to tirnanog for giving few Tips and Hints how to make it better suitable for Arch. 
