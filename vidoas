@@ -7,7 +7,6 @@
 # Thanks to original Author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
 #
 #
-
 #User must be root (because visudo behave same way)
 if [ "$(id -u)" != 0 ]; then printf '%s: you need to be root\n' "$0"; exit 1; fi
 
@@ -19,7 +18,6 @@ error() {
 help() {
     cat - >&2 <<EOF
 vidoas - safely edit the doas.conf file (like visudo for doas)
-
 usage: vidoas [-hv]
 
 Options:
@@ -52,16 +50,32 @@ done
 
 trap 'trap - EXIT HUP QUIT TERM INT ABRT; rm -f "$tmp" "$tmpcopy"' EXIT HUP QUIT TERM INT ABRT
 
-# Check for editor
-if [ -z "$DOAS_EDITOR" ]; then
-	if [ -z "$EDITOR" ]; then
-		error 'no editor specified'
-	fi
-	editor_cmd="$EDITOR"
-else
+# Check for editor with fallback chain
+editor_cmd=""
+
+# Priority 1: DOAS_EDITOR
+if [ -n "$DOAS_EDITOR" ]; then
 	editor_cmd="$DOAS_EDITOR"
+# Priority 2: EDITOR
+elif [ -n "$EDITOR" ]; then
+	editor_cmd="$EDITOR"
+# Priority 3: Search for common editors
+else
+	for editor in nano vim vi; do
+		if command -v "$editor" > /dev/null 2>&1; then
+			editor_cmd="$editor"
+			echo "vidoas: using '$editor' as editor (set \$EDITOR or \$DOAS_EDITOR to change)" >&2
+			break
+		fi
+	done
 fi
 
+# Final check if we found an editor
+if [ -z "$editor_cmd" ]; then
+	error 'no editor found. Please set $EDITOR or $DOAS_EDITOR, or install nano/vim/vi'
+fi
+
+# Verify the editor command exists
 if ! command -v "$editor_cmd" > /dev/null 2>&1; then
 	error "no valid editor command: '$editor_cmd'"
 fi
@@ -69,11 +83,10 @@ fi
 # Set up temps
 tmp="$(mktemp)"
 tmpcopy="$(mktemp)"
-
 cat "/etc/doas.conf" > "$tmp"
 conf="/etc/doas.conf"
-
 cat "$tmp" > "$tmpcopy"
+
 "$editor_cmd" "$tmp"
 
 # Loop until config is correct
