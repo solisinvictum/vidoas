@@ -201,11 +201,54 @@ out="$("$VIDOAS" -c --file="$conf" 2>&1)"; rc=$?
 out="$("$VIDOAS" -f 2>&1)"; rc=$?
 [ $rc -eq 1 ] && [[ $out == *"requires a file"* ]] && ok "-f without argument" || bad "-f no arg (rc=$rc, out=$out)"
 
-# 20: non-root is refused
+# 20: non-root is refused (-cq: silently, exit status only)
 if id nobody > /dev/null 2>&1 && command -v setpriv > /dev/null; then
-	out="$(setpriv --reuid="$(id -u nobody)" --regid="$(id -g nobody)" --clear-groups "$VIDOAS" -f "$conf" 2>&1)"; rc=$?
+	nobody=(setpriv --reuid="$(id -u nobody)" --regid="$(id -g nobody)" --clear-groups)
+	out="$("${nobody[@]}" "$VIDOAS" -f "$conf" 2>&1)"; rc=$?
 	[ $rc -eq 1 ] && [[ $out == *"need to be root"* ]] && ok "non-root refused" || bad "non-root (rc=$rc, out=$out)"
+	"${nobody[@]}" "$VIDOAS" -cq "$conf" > "$work/out" 2>&1; rc=$?
+	[ $rc -eq 1 ] && [ ! -s "$work/out" ] && ok "non-root -cq: silent, 1" || bad "non-root -cq (rc=$rc, out=$(cat "$work/out"))"
 fi
+
+# 21-23: -cq like visudo: no output, only the exit status
+setup "$VALID"
+"$VIDOAS" -cq -f "$conf" > "$work/out" 2>&1; rc=$?; out="$(cat "$work/out")"
+[ $rc -eq 0 ] && [ ! -s "$work/out" ] && ok "-cq on valid file: silent, 0" || bad "-cq valid (rc=$rc, out=$out)"
+setup "$INVALID"
+"$VIDOAS" -cq -f "$conf" > "$work/out" 2>&1; rc=$?; out="$(cat "$work/out")"
+[ $rc -eq 1 ] && [ ! -s "$work/out" ] && ok "-cq on invalid file: silent, 1" || bad "-cq invalid (rc=$rc, out=$out)"
+setup "$VALID"; chmod 0666 "$conf"
+"$VIDOAS" -cq -f "$conf" > "$work/out" 2>&1; rc=$?; out="$(cat "$work/out")"
+[ $rc -eq 1 ] && [ ! -s "$work/out" ] && ok "-cq on world-writable file: silent, 1" || bad "-cq perms (rc=$rc, out=$out)"
+
+# 24: combined -csf FILE, -ffile, -- FILE and a positional file (visudo style)
+setup "$VALID"
+r1=0; r2=0; r3=0; r4=0
+"$VIDOAS" -csf "$conf" > /dev/null 2>&1 || r1=$?
+"$VIDOAS" -c "-f$conf" > /dev/null 2>&1 || r2=$?
+"$VIDOAS" -c -- "$conf" > /dev/null 2>&1 || r3=$?
+"$VIDOAS" -c "$conf" > /dev/null 2>&1 || r4=$?
+[ "$r1$r2$r3$r4" = 0000 ] && ok "-csf FILE, -fFILE, -- FILE, positional FILE" || bad "option forms ($r1 $r2 $r3 $r4)"
+
+# 25: file name starting with a dash after -f is not split into options
+setup "$VALID"; cp "$conf" "$work/etc/-name"
+out="$(cd "$work/etc" && "$VIDOAS" -c -f -name 2>&1)"; rc=$?
+[ $rc -eq 0 ] && [[ $out == *"/-name: parsed OK"* ]] && ok "-f -name is a file name" || bad "-f -name (rc=$rc, out=$out)"
+
+# 26: two files are refused
+setup "$VALID"
+out="$("$VIDOAS" -c -f "$conf" "$conf" 2>&1)"; rc=$?
+[ $rc -eq 1 ] && [[ $out == *"only one file"* ]] && ok "two files refused" || bad "two files (rc=$rc, out=$out)"
+
+# 27: -q while editing: saved without messages
+setup "$VALID"; rounds "$VALID2"
+"$VIDOAS" -q "$conf" > "$work/out" 2>&1; rc=$?; out="$(cat "$work/out")"
+[ $rc -eq 0 ] && [ ! -s "$work/out" ] && [ "$(cat "$conf")" = "${VALID2%$'\n'}" ] && ok "-q edit: saved silently" || bad "-q edit (rc=$rc, out=$out)"
+
+# 28: called through a visudo symlink (vidoas-visudo package)
+setup "$VALID"; ln -s "$VIDOAS" "$work/visudo"
+"$work/visudo" -cq "$conf" > "$work/out" 2>&1; rc=$?; out="$(cat "$work/out")"
+[ $rc -eq 0 ] && [ ! -s "$work/out" ] && ok "visudo -cq via symlink" || bad "visudo symlink (rc=$rc, out=$out)"
 
 echo
 echo "passed: $pass, failed: $fail"

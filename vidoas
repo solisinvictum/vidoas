@@ -8,9 +8,11 @@
 # Thanks to the original author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
 #
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 conf="/etc/doas.conf"
 check_only=0
+quiet=0
+file_given=0
 
 # Colors only when talking to a terminal (and NO_COLOR is not set)
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -32,17 +34,26 @@ warn() {
 	printf '%svidoas: %s%s\n' "$red" "$*" "$reset" >&2
 }
 
+# Informational messages, hidden by -q
+info() {
+	[ "$quiet" -eq 1 ] || printf '%s\n' "$*" >&2
+}
+
 help() {
 	cat - >&2 <<EOF
 vidoas - safely edit the doas.conf file (like visudo for doas)
 
-usage: vidoas [-chV] [-f file]
+usage: vidoas [-chqsV] [[-f] file]
 
 Options:
   -c, --check		check the file for syntax errors and bad permissions, do not edit
   -f, --file file	edit (or check) file instead of $conf
   -h, --help		display help message and exit
+  -q, --quiet		no informational output; with -c only the exit status tells the result
+  -s, --strict		accepted for visudo compatibility (doas -C is always strict)
   -V, -v, --version	display version information and exit
+
+Short options can be combined like with visudo, e.g. 'vidoas -cq' or 'vidoas -cf file'.
 
 Environment Variables:
   DOAS_EDITOR	program used to edit files
@@ -55,6 +66,62 @@ Variables may be missing when running as root via doas: add 'keepenv' (or
 EOF
 }
 
+# Split combined short options like getopt does: -cq -> -c -q,
+# -cf file -> -c -f file, -ffile -> -f file
+# (the argument after -f/--file is passed on untouched, even if it starts with -)
+args=()
+need_arg=0
+while [ "$#" -ne 0 ]; do
+	if [ "$need_arg" -eq 1 ]; then
+		args+=("$1")
+		need_arg=0
+		shift
+		continue
+	fi
+	case "$1" in
+		--)
+			args+=("$@")
+			break
+			;;
+		--file)
+			args+=("$1")
+			need_arg=1
+			;;
+		--*)
+			args+=("$1")
+			;;
+		-?*)
+			opts="${1#-}"
+			while [ -n "$opts" ]; do
+				c="${opts:0:1}"
+				opts="${opts:1}"
+				if [ "$c" = "f" ]; then
+					if [ -n "$opts" ]; then
+						args+=(-f "$opts")
+						opts=""
+					else
+						args+=(-f)
+						need_arg=1
+					fi
+				else
+					args+=("-$c")
+				fi
+			done
+			;;
+		*)
+			args+=("$1")
+			;;
+	esac
+	shift
+done
+set -- "${args[@]}"
+
+set_file() {
+	[ "$file_given" -eq 0 ] || { help; error "only one file can be given"; }
+	conf="$1"
+	file_given=1
+}
+
 while [ "$#" -ne 0 ]; do
 	case "$1" in
 		-c | --check)
@@ -62,11 +129,22 @@ while [ "$#" -ne 0 ]; do
 			;;
 		-f | --file)
 			[ "$#" -ge 2 ] || { help; error "option '$1' requires a file argument"; }
-			conf="$2"
+			set_file "$2"
 			shift
 			;;
 		--file=*)
-			conf="${1#--file=}"
+			set_file "${1#--file=}"
+			;;
+		-q | --quiet)
+			quiet=1
+			;;
+		-s | --strict)
+			;;
+		--)
+			shift
+			[ "$#" -le 1 ] || { help; error "only one file can be given"; }
+			[ "$#" -eq 0 ] || set_file "$1"
+			break
 			;;
 		-h | --help)
 			help
@@ -76,13 +154,22 @@ while [ "$#" -ne 0 ]; do
 			echo "vidoas version $VERSION"
 			exit 0
 			;;
-		*)
+		-?*)
 			help
 			error "invalid option: '$1'"
+			;;
+		*)
+			# visudo style: vidoas [-f] file
+			set_file "$1"
 			;;
 	esac
 	shift
 done
+
+# -cq: like visudo, only the exit status tells the result, no output at all
+if [ "$check_only" -eq 1 ] && [ "$quiet" -eq 1 ]; then
+	exec > /dev/null 2>&1
+fi
 
 [ -n "$conf" ] || error "empty file name"
 # Absolute path: safe for find/mktemp even with names like "-name"
@@ -108,18 +195,25 @@ fi
 # or that is writable by group or others.
 check_perms() {
 	local found
-	found="$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" || {
-		warn "$1: cannot check permissions"
+	found="$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print 2> /dev/null)" || {
+		[ "$quiet" -eq 1 ] || warn "$1: cannot check permissions"
 		return 1
 	}
 	if [ -n "$found" ]; then
-		warn "$1: bad permissions or owner (doas needs it owned by root and not writable by group/others)"
+		[ "$quiet" -eq 1 ] || warn "$1: bad permissions or owner (doas needs it owned by root and not writable by group/others)"
 		return 1
 	fi
 	return 0
 }
 
 if [ "$check_only" -eq 1 ]; then
+	if [ "$quiet" -eq 1 ]; then
+		# Like visudo -cq: no output, only the exit status
+		[ -f "$conf" ] || exit 1
+		doas -C "$conf" 2> /dev/null || exit 1
+		check_perms "$conf" || exit 1
+		exit 0
+	fi
 	[ -f "$conf" ] || error "$conf: no such file"
 	doas -C "$conf" || error "$conf: syntax error, see above"
 	check_perms "$conf" || exit 1
@@ -137,7 +231,7 @@ else
 	for editor in editor nano vim vi; do
 		if command -v "$editor" > /dev/null 2>&1; then
 			editor_cmd="$editor"
-			echo "vidoas: using '$editor' as editor (set \$EDITOR or \$DOAS_EDITOR to change)" >&2
+			info "vidoas: using '$editor' as editor (set \$EDITOR or \$DOAS_EDITOR to change)"
 			break
 		fi
 	done
@@ -210,15 +304,15 @@ done
 
 # Install if changed
 if [ -f "$conf" ] && cmp -s "$tmp" "$conf"; then
-	echo "vidoas: $conf unchanged"
+	info "vidoas: $conf unchanged"
 	exit 0
 fi
 if [ ! -f "$conf" ] && [ ! -s "$tmp" ]; then
-	echo "vidoas: $conf unchanged"
+	info "vidoas: $conf unchanged"
 	exit 0
 fi
 
 chown 0:0 "$tmp" || error "cannot set owner of temporary file, $conf unchanged"
 chmod 0400 "$tmp" || error "cannot set mode of temporary file, $conf unchanged"
 mv -f -- "$tmp" "$conf" || error "cannot replace $conf"
-printf '%svidoas: %s saved%s\n' "$green" "$conf" "$reset"
+[ "$quiet" -eq 1 ] || printf '%svidoas: %s saved%s\n' "$green" "$conf" "$reset"

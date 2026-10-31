@@ -8,13 +8,17 @@ Works with OpenDoas on Arch Linux, Debian, Ubuntu and other Linux distributions.
 ## Usage
 
 ```
-vidoas [-chV] [-f file]
+vidoas [-chqsV] [[-f] file]
 
   -c, --check         check the file for syntax errors and bad permissions, do not edit
   -f, --file file     edit (or check) file instead of /etc/doas.conf
   -h, --help          display help message and exit
+  -q, --quiet         no informational output; with -c only the exit status tells the result
+  -s, --strict        accepted for visudo compatibility (doas -C is always strict)
   -V, -v, --version   display version information and exit
 ```
+
+The options work like the ones of visudo, including combined short options, so scripts that call `visudo -cq` or `visudo -cf file` also work with vidoas.
 
 If the edited file has a syntax error, doas prints the line and vidoas asks what to do:
 
@@ -37,6 +41,12 @@ Set `NO_COLOR` to disable colored messages.
 ## Installation
 
 Arch Linux: install [vidoas from the AUR](https://aur.archlinux.org/packages/vidoas).
+
+### visudo symlink
+
+On a system without sudo (e.g. with [opendoas-sudo](https://aur.archlinux.org/packages/opendoas-sudo) or [doas-sudo-shim](https://aur.archlinux.org/packages/doas-sudo-shim)), the AUR package [vidoas-visudo](https://aur.archlinux.org/packages/vidoas-visudo) adds `/usr/bin/visudo` as a symlink to vidoas, so muscle memory and scripts calling `visudo` keep working. It conflicts with the real sudo, which ships its own visudo. Both packages are built from this repository (split package, pkgbase `vidoas`). The old repository [vidoas-visudo](https://github.com/solisinvictum/vidoas-visudo) is archived.
+
+Without the AUR: `ln -s vidoas /usr/local/bin/visudo`
 
 Other systems: copy `vidoas` to `/usr/local/bin/` (or `/usr/bin/`) and make it executable.
 
