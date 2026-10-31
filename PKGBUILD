@@ -8,7 +8,7 @@ arch=('any')
 url="https://github.com/solisinvictum/vidoas"
 license=('GPL-3.0-only')
 source=("$pkgbase-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('93013feb77c43a075365cbe2fb6d5920a995106630417c0fe34f171873cd1c03')
 
 package_vidoas() {
   depends=('bash' 'opendoas' 'util-linux')
