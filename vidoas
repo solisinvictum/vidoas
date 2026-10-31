@@ -1,67 +1,140 @@
 #!/bin/bash
 #
-# 18.08.2022: Updated/forked Version compared to original one: https://git.sr.ht/~insidepie/vidoas/tree
-# This Version is specific to Arch and his opendoas package (location /etc/doas.conf)
-# Changed the behavior of this Script to be exactly like visudo, wich NEEDS the user to be root.
+# vidoas - safely edit the doas.conf file (like visudo for doas)
 #
-# Thanks to original Author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
+# 18.08.2022: Updated/forked version of the original one: https://git.sr.ht/~insidepie/vidoas/tree
+# Changed the behavior of this script to be exactly like visudo, which NEEDS the user to be root.
 #
+# Thanks to the original author Joshua Murphy for his initial work https://git.sr.ht/~insidepie/vidoas
 #
-#User must be root (because visudo behave same way)
-if [ "$(id -u)" != 0 ]; then printf '%s: you need to be root\n' "$0"; exit 1; fi
+
+VERSION="1.1.0"
+conf="/etc/doas.conf"
+check_only=0
+
+# Colors only when talking to a terminal (and NO_COLOR is not set)
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+	red=$'\033[1;31m'
+	green=$'\033[1;32m'
+	reset=$'\033[0m'
+else
+	red=""
+	green=""
+	reset=""
+fi
 
 error() {
-  echo "vidoas: $@" 1>&2
-  exit 1
+	printf '%svidoas: %s%s\n' "$red" "$*" "$reset" >&2
+	exit 1
+}
+
+warn() {
+	printf '%svidoas: %s%s\n' "$red" "$*" "$reset" >&2
 }
 
 help() {
-    cat - >&2 <<EOF
+	cat - >&2 <<EOF
 vidoas - safely edit the doas.conf file (like visudo for doas)
-usage: vidoas [-hv]
+
+usage: vidoas [-chV] [-f file]
 
 Options:
+  -c, --check		check the file for syntax errors and bad permissions, do not edit
+  -f, --file file	edit (or check) file instead of $conf
   -h, --help		display help message and exit
-  -v, --version		display version information and exit
+  -V, -v, --version	display version information and exit
 
 Environment Variables:
   DOAS_EDITOR	program used to edit files
   EDITOR	program used to edit files if DOAS_EDITOR is unset
+  NO_COLOR	disable colored messages
+
+If neither is set, the first of editor, nano, vim and vi that is found is used.
+Variables may be missing when running as root via doas: add 'keepenv' (or
+'setenv { EDITOR }') to the permit rule, or export EDITOR in root's shell profile.
 EOF
 }
 
 while [ "$#" -ne 0 ]; do
 	case "$1" in
+		-c | --check)
+			check_only=1
+			;;
+		-f | --file)
+			[ "$#" -ge 2 ] || { help; error "option '$1' requires a file argument"; }
+			conf="$2"
+			shift
+			;;
+		--file=*)
+			conf="${1#--file=}"
+			;;
 		-h | --help)
 			help
 			exit 0
 			;;
-		-v | --version)
-			echo 'vidoas version 1.0.0'
+		-V | -v | --version)
+			echo "vidoas version $VERSION"
 			exit 0
 			;;
 		*)
-			echo "vidoas: invalid option: '$1'"
 			help
-			exit 1
+			error "invalid option: '$1'"
 			;;
 	esac
+	shift
 done
 
-trap 'trap - EXIT HUP QUIT TERM INT ABRT; rm -f "$tmp" "$tmpcopy"' EXIT HUP QUIT TERM INT ABRT
+[ -n "$conf" ] || error "empty file name"
+# Absolute path: safe for find/mktemp even with names like "-name"
+case "$conf" in
+	/*) ;;
+	*) conf="$PWD/$conf" ;;
+esac
 
-# Check for editor with fallback chain
+# User must be root (because visudo behaves the same way)
+if [ "$(id -u)" != 0 ]; then
+	error "you need to be root"
+fi
+
+command -v doas > /dev/null 2>&1 || error "doas not found in PATH"
+
+# Edit the target of a symlink instead of replacing the link with a file
+if [ -L "$conf" ]; then
+	target="$(readlink -f -- "$conf")" || error "cannot resolve symlink '$conf'"
+	conf="$target"
+fi
+
+# doas refuses to run with a config file that is not owned by root
+# or that is writable by group or others.
+check_perms() {
+	local found
+	found="$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" || {
+		warn "$1: cannot check permissions"
+		return 1
+	}
+	if [ -n "$found" ]; then
+		warn "$1: bad permissions or owner (doas needs it owned by root and not writable by group/others)"
+		return 1
+	fi
+	return 0
+}
+
+if [ "$check_only" -eq 1 ]; then
+	[ -f "$conf" ] || error "$conf: no such file"
+	doas -C "$conf" || error "$conf: syntax error, see above"
+	check_perms "$conf" || exit 1
+	printf '%svidoas: %s: parsed OK%s\n' "$green" "$conf" "$reset"
+	exit 0
+fi
+
+# Find an editor: DOAS_EDITOR, EDITOR, then common editors
 editor_cmd=""
-
-# Priority 1: DOAS_EDITOR
-if [ -n "$DOAS_EDITOR" ]; then
+if [ -n "${DOAS_EDITOR:-}" ]; then
 	editor_cmd="$DOAS_EDITOR"
-# Priority 2: EDITOR
-elif [ -n "$EDITOR" ]; then
+elif [ -n "${EDITOR:-}" ]; then
 	editor_cmd="$EDITOR"
-# Priority 3: Search for common editors
 else
-	for editor in nano vim vi; do
+	for editor in editor nano vim vi; do
 		if command -v "$editor" > /dev/null 2>&1; then
 			editor_cmd="$editor"
 			echo "vidoas: using '$editor' as editor (set \$EDITOR or \$DOAS_EDITOR to change)" >&2
@@ -70,38 +143,82 @@ else
 	done
 fi
 
-# Final check if we found an editor
-if [ -z "$editor_cmd" ]; then
-	error 'no editor found. Please set $EDITOR or $DOAS_EDITOR, or install nano/vim/vi'
+[ -n "$editor_cmd" ] || error "no editor found. Please set \$EDITOR or \$DOAS_EDITOR, or install nano/vim/vi"
+
+# Allow editors with arguments, e.g. EDITOR="code --wait"
+read -r -a editor_argv <<< "$editor_cmd"
+command -v "${editor_argv[0]}" > /dev/null 2>&1 || error "no valid editor command: '$editor_cmd'"
+
+confdir="$(dirname -- "$conf")"
+[ -d "$confdir" ] || error "$confdir: no such directory"
+if [ -e "$conf" ] && [ ! -f "$conf" ]; then
+	error "$conf: not a regular file"
 fi
 
-# Verify the editor command exists
-if ! command -v "$editor_cmd" > /dev/null 2>&1; then
-	error "no valid editor command: '$editor_cmd'"
+# Lock against a second vidoas running at the same time. The directory is
+# locked, not the file: the file is replaced on save (new inode) and may not
+# exist yet.
+if command -v flock > /dev/null 2>&1; then
+	exec 9< "$confdir" || error "cannot open $confdir"
+	flock -n 9 || error "$confdir is busy, another vidoas is running"
+else
+	warn "flock not found, no protection against concurrent edits"
 fi
 
-# Set up temps
-tmp="$(mktemp)"
-tmpcopy="$(mktemp)"
-cat "/etc/doas.conf" > "$tmp"
-conf="/etc/doas.conf"
-cat "$tmp" > "$tmpcopy"
+# The temporary file lives next to the real one, so the final mv is atomic
+tmp="$(mktemp "$conf.XXXXXX")" || error "cannot create temporary file in $confdir"
+trap 'rm -f "$tmp"' EXIT
+trap 'exit 1' HUP INT QUIT TERM
 
-"$editor_cmd" "$tmp"
+if [ -f "$conf" ]; then
+	cat -- "$conf" > "$tmp" || error "cannot read $conf"
+fi
 
-# Loop until config is correct
-while ! doas -C $tmp; do
-	echo "Syntax Error! See Message above this line. Reopening Editor in 3 Seconds."
-	sleep 3
-    "$editor_cmd" "$tmp"
+run_editor() {
+	# 9<&-: an editor that leaves a background process must not keep the lock
+	if ! "${editor_argv[@]}" "$tmp" 9<&-; then
+		error "editor '$editor_cmd' failed, $conf unchanged"
+	fi
+}
+
+run_editor
+
+# Loop until the config is correct (or the user gives up)
+while ! doas -C "$tmp"; do
+	warn "$conf not saved because of the error above"
+	if [ ! -t 0 ]; then
+		error "$conf unchanged"
+	fi
+	while true; do
+		printf 'What now? (e)dit again, e(x)it without saving [e]: ' >&2
+		read -r answer || answer="x"
+		case "$answer" in
+			"" | [eE])
+				run_editor
+				break
+				;;
+			[xXqQ])
+				echo "vidoas: $conf unchanged" >&2
+				exit 1
+				;;
+			*)
+				echo "Options are: (e)dit again, e(x)it without saving" >&2
+				;;
+		esac
+	done
 done
 
-# Copy if changed
-if cmp -s "$tmp" "$tmpcopy"; then
-	echo "vidoas: $conf: unchanged"
-else
-    chown root:root "$tmp"
-    chmod 0400 "$tmp"
-    cp -fp "$tmp" "$conf"
-    rm -f "$tmp"
+# Install if changed
+if [ -f "$conf" ] && cmp -s "$tmp" "$conf"; then
+	echo "vidoas: $conf unchanged"
+	exit 0
 fi
+if [ ! -f "$conf" ] && [ ! -s "$tmp" ]; then
+	echo "vidoas: $conf unchanged"
+	exit 0
+fi
+
+chown 0:0 "$tmp" || error "cannot set owner of temporary file, $conf unchanged"
+chmod 0400 "$tmp" || error "cannot set mode of temporary file, $conf unchanged"
+mv -f -- "$tmp" "$conf" || error "cannot replace $conf"
+printf '%svidoas: %s saved%s\n' "$green" "$conf" "$reset"
